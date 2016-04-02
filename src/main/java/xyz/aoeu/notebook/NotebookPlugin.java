@@ -1,5 +1,6 @@
 package xyz.aoeu.notebook;
 
+import com.google.common.collect.Iterables;
 import com.google.inject.Inject;
 import ninja.leaping.configurate.ConfigurationNode;
 import ninja.leaping.configurate.commented.CommentedConfigurationNode;
@@ -12,24 +13,23 @@ import org.spongepowered.api.entity.living.player.User;
 import org.spongepowered.api.event.game.state.GamePreInitializationEvent;
 import org.spongepowered.api.event.game.state.GameStoppingServerEvent;
 import org.spongepowered.api.plugin.Plugin;
-import org.spongepowered.api.service.config.DefaultConfig;
+import org.spongepowered.api.config.DefaultConfig;
 import org.spongepowered.api.event.Listener;
 import org.spongepowered.api.service.pagination.PaginationService;
 import org.spongepowered.api.service.sql.SqlService;
 import org.spongepowered.api.text.Text;
-import org.spongepowered.api.text.Texts;
 import org.spongepowered.api.util.PEBKACException;
-import org.spongepowered.api.util.command.CommandException;
-import org.spongepowered.api.util.command.CommandResult;
-import org.spongepowered.api.util.command.CommandSource;
-import org.spongepowered.api.util.command.spec.CommandSpec;
+import org.spongepowered.api.command.CommandException;
+import org.spongepowered.api.command.CommandResult;
+import org.spongepowered.api.command.CommandSource;
+import org.spongepowered.api.command.spec.CommandSpec;
 
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Optional;
-import java.util.stream.Stream;
+import java.util.concurrent.Executor;
 
-import static org.spongepowered.api.util.command.args.GenericArguments.*;
+import static org.spongepowered.api.command.args.GenericArguments.*;
 import static xyz.aoeu.notebook.Messages.*;
 import static xyz.aoeu.notebook.NotebookTranslationHelper.t;
 
@@ -47,6 +47,7 @@ public class NotebookPlugin {
     @Inject private Game game;
     private SqlService sql;
     private PaginationService pagination;
+    private Executor asyncExecutor;
 
     private NotebookStorage storage;
 
@@ -67,6 +68,7 @@ public class NotebookPlugin {
         }
         this.sql = game.getServiceManager().provideUnchecked(SqlService.class);
         this.pagination = game.getServiceManager().provideUnchecked(PaginationService.class);
+        this.asyncExecutor = task -> game.getScheduler().createTaskBuilder().async().execute(task).submit(this);
         try {
             this.storage = new SqlNotebookStorage(this.sql.getDataSource(this.config.getConnectionUrl()), asyncExecutor);
         } catch (SQLException e) {
@@ -74,8 +76,8 @@ public class NotebookPlugin {
         }
 
 
-        game.getCommandDispatcher().register(this, CommandSpec.builder()
-                .arguments(onlyOne(playerOrSource(t("command.notes.arg.source").build(), game)))
+        game.getCommandManager().register(this, CommandSpec.builder()
+                .arguments(onlyOne(playerOrSource(t("command.notes.arg.source").build())))
                 .executor((src, args) -> {
                     User target = args.<User>getOne("command.notes.arg.source").orElseThrow(IllegalStateException::new);
                     Permissions.check(src, Permissions.owned(Permissions.NOTEBOOK_VIEW, src, target));
@@ -83,16 +85,14 @@ public class NotebookPlugin {
                     game.getScheduler().createTaskBuilder()
                             .async()
                             .execute(() -> {
-                                Stream<Note> notes = getStorage().getNotes(target.getUniqueId());
+                                Iterable<Note> notes = getStorage().getNotes(target.getUniqueId());
                                 this.pagination.builder()
-                                        .contents(notes
-                                                .map(note -> {
-                                                    return normal(Texts.builder())
-                                                            .append(hl(Texts.builder(String.valueOf(note.getId())).append(ID_SPACER)).build(), // ID
-                                                                    Texts.of(note.getContents())); // Contents
-                                                })
-                                                .toArray(Text[]::new))
-                                        .title(normal(t("command.notes.result.header", hl(Texts.builder(target.getName())).build())).build())
+                                        .contents(Iterables.transform(notes, note -> {
+                                                    return normal(Text.builder())
+                                                            .append(hl(Text.builder(String.valueOf(note.getId())).append(ID_SPACER)).build(), // ID
+                                                                    Text.of(note.getContents())).build(); // Contents
+                                                }))
+                                        .title(normal(t("command.notes.result.header", hl(Text.builder(target.getName())).build())).build())
                                         .sendTo(src);
 
                             }).submit(this);
@@ -100,11 +100,11 @@ public class NotebookPlugin {
 
                 })
                 .build(), "notes");
-        game.getCommandDispatcher().register(this, CommandSpec.builder()
+        game.getCommandManager().register(this, CommandSpec.builder()
                 .arguments(flags()
                         .flag("b") // Add from book
                         .valueFlag(integer(t("command.note.arg.id").build()), "e")
-                        .valueFlag(onlyOne(playerOrSource(t("command.note.arg.owner").build(), game)), "o")
+                        .valueFlag(onlyOne(playerOrSource(t("command.note.arg.owner").build())), "o")
                         .buildWith(remainingJoinedStrings(t("command.note.arg.contents").build()))
                 )
                 .executor((src, args) -> {

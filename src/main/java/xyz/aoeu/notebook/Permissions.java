@@ -1,10 +1,10 @@
 package xyz.aoeu.notebook;
 
+import org.spongepowered.api.command.CommandPermissionException;
 import org.spongepowered.api.entity.living.player.User;
 import org.spongepowered.api.service.permission.Subject;
-import org.spongepowered.api.util.command.CommandPermissionException;
 
-public class Permissions {
+class Permissions {
     public static final String NOTEBOOK_VIEW = "notebook.view";
     public static final String NOTEBOOK_CREATE = "notebook.create";
     public static final String NOTEBOOK_CREATE_BOOK = "notebook.create.book";

@@ -1,12 +1,11 @@
 package xyz.aoeu.notebook;
 
-
 import com.google.common.io.Resources;
+import xyz.aoeu.notebook.channel.Channel;
 
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
@@ -17,8 +16,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.function.Function;
-import java.util.stream.Stream;
 
 /**
  * An implementation of {@link NotebookStorage} using an SQL database
@@ -41,12 +38,7 @@ public class SqlNotebookStorage implements NotebookStorage {
         this.db = db;
         this.asyncExecutor = asyncExecutor;
         performTaskAsynchronously(conn -> {
-            DatabaseMetaData md;
-            try {
-                md = conn.getMetaData();
-            } catch (SQLException e) {
-                throw new RuntimeException(e);
-            }
+            DatabaseMetaData md = conn.getMetaData();
             if (!md.getTables(null, null, "notes", null).next()) {
                 conn.setAutoCommit(false);
                 for (String line : DEPLOY_DATA) {
@@ -54,15 +46,27 @@ public class SqlNotebookStorage implements NotebookStorage {
                 }
                 conn.commit();
             }
-            return null;
         });
     }
 
-    <T> CompletableFuture<T> performTaskAsynchronously(Function<Connection, T> action) {
+    private <T> CompletableFuture<T> performTaskAsynchronously(FailableFunction<Connection, T, SQLException> action) {
         CompletableFuture<T> ret = new CompletableFuture<>();
         asyncExecutor.execute(() -> {
             try (Connection conn = this.db.getConnection()) {
                 ret.complete(action.apply(conn));
+            } catch (Exception e) {
+                ret.completeExceptionally(e);
+            }
+        });
+        return ret;
+    }
+
+    private CompletableFuture<Void> performTaskAsynchronously(FailableConsumer<Connection, SQLException> action) {
+        CompletableFuture<Void> ret = new CompletableFuture<>();
+        asyncExecutor.execute(() -> {
+            try (Connection conn = this.db.getConnection()) {
+                action.accept(conn);
+                ret.complete(null);
             } catch (Exception e) {
                 ret.completeExceptionally(e);
             }
@@ -79,15 +83,67 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return A stream of notes owned by a specific user
      */
     @Override
-    public Stream<Note> getNotes(UUID owner) {
-        return performTaskAsynchronously(conn -> {
+    public Iterable<Note> getNotes(UUID owner) {
+        Channel<Note> ret = Channel.buffered(32);
+        performTaskAsynchronously(conn -> {
             PreparedStatement stmt = conn.prepareStatement("SELECT (id, owner, contents) FROM notes WHERE owner=?");
-            stmt.setBytes(1, owner.getLeastSignificantBits();
+            stmt.setBytes(1, uuidToBytes(owner));
             ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Note note = new Note(bytesToUUID(rs.getBytes(2)), rs.getString(3));
+                note.setId(rs.getInt(1));
+                ret.provide(note);
+            }
+            ret.close();
         });
+        return ret;
     }
 
-    private byte[] uuidToBytes(UUID id) {
+    static byte[] uuidToBytes(UUID id) {
+        long msb = id.getMostSignificantBits();
+        long lsb = id.getLeastSignificantBits();
+        return new byte[] {
+                // MSB
+                (byte) ((msb >> 0x38) & 0xFF),
+                (byte) ((msb >> 0x30) & 0xFF),
+                (byte) ((msb >> 0x28) & 0xFF),
+                (byte) ((msb >> 0x20) & 0xFF),
+                (byte) ((msb >> 0x18) & 0xFF),
+                (byte) ((msb >> 0x10) & 0xFF),
+                (byte) ((msb >> 0x08) & 0xFF),
+                (byte) (msb & 0xFF),
+                // LSB
+                (byte) ((lsb >> 0x38) & 0xFF),
+                (byte) ((lsb >> 0x30) & 0xFF),
+                (byte) ((lsb >> 0x28) & 0xFF),
+                (byte) ((lsb >> 0x20) & 0xFF),
+                (byte) ((lsb >> 0x18) & 0xFF),
+                (byte) ((lsb >> 0x10) & 0xFF),
+                (byte) ((lsb >> 0x08) & 0xFF),
+                (byte) (lsb & 0xFF)};
+    }
+
+    static UUID bytesToUUID(byte[] bytes) {
+        if (bytes.length != 16) {
+            throw new IllegalArgumentException("Input must be 16 bytes long");
+        }
+
+        return new UUID((long) bytes[0] << 0x38
+                | (long) bytes[1] << 0x30
+                | (long) bytes[2] << 0x28
+                | (long) bytes[3] << 0x20
+                | (long) bytes[4] << 0x18
+                | (long) bytes[5] << 0x10
+                | (long) bytes[6] << 0x08
+                | (long) bytes[7],
+                (long) bytes[8] << 0x38
+                        | (long) bytes[9] << 0x30
+                        | (long) bytes[10] << 0x28
+                        | (long) bytes[11] << 0x20
+                        | (long) bytes[12] << 0x18
+                        | (long) bytes[13] << 0x10
+                        | (long) bytes[14] << 0x08
+                        | (long) bytes[15]);
 
     }
 
@@ -98,8 +154,19 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return All currently stored notes
      */
     @Override
-    public Stream<Note> getAllNotes() {
-        return null;
+    public Iterable<Note> getAllNotes() {
+        Channel<Note> chan = Channel.buffered();
+        performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("SELECT (id, owner, contents) FROM notes");
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Note note = new Note(bytesToUUID(rs.getBytes(2)), rs.getString(3));
+                note.setId(rs.getInt(1));
+                chan.provide(note);
+            }
+            chan.close();
+        });
+        return chan;
     }
 
     /**
@@ -110,8 +177,17 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return A stream of all UUIDs that have stored notes
      */
     @Override
-    public Stream<UUID> getKnownOwners() {
-        return null;
+    public Iterable<UUID> getKnownOwners() {
+        Channel<UUID> ret = Channel.buffered(32);
+        performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("SELECT (owner) FROM notes UNIQUE");
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                ret.provide(bytesToUUID(rs.getBytes(1)));
+            }
+            ret.close();
+        });
+        return ret;
     }
 
     /**
@@ -123,9 +199,17 @@ public class SqlNotebookStorage implements NotebookStorage {
     @Override
     public CompletableFuture<Optional<Note>> getNote(int id) {
         return performTaskAsynchronously(conn -> {
-            conn.prepareStatement("")
-        })
-        return null;
+            PreparedStatement stmt = conn.prepareStatement("SELECT (owner, contents) FROM notes WHERE id=?");
+            stmt.setInt(1, id);
+            ResultSet rs = stmt.executeQuery();
+            if (!rs.next()) {
+                return Optional.empty();
+            } else {
+                Note ret = new Note(bytesToUUID(rs.getBytes(1)), rs.getString(2));
+                ret.setId(id);
+                return Optional.of(ret);
+            }
+        });
     }
 
     /**
@@ -136,7 +220,16 @@ public class SqlNotebookStorage implements NotebookStorage {
      */
     @Override
     public CompletableFuture<Note> insertNote(Note note) {
-        return null;
+        return performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("INSERT (owner, contents) INTO notes VALUES (?, ?); CALL IDENTITY()");
+            stmt.setBytes(1, uuidToBytes(note.getOwner()));
+            stmt.setString(2, note.getContents());
+
+            ResultSet rs = stmt.executeQuery();
+            rs.next();
+            int id = rs.getInt(1);
+            return note.withId(id);
+        });
     }
 
     /**
@@ -147,7 +240,14 @@ public class SqlNotebookStorage implements NotebookStorage {
      */
     @Override
     public CompletableFuture<Note> updateNote(Note note) {
-        return null;
+        return performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("UPDATE notes SET contents=?, owner=? WHERE id=?");
+            stmt.setString(1, note.getContents());
+            stmt.setBytes(2, uuidToBytes(note.getOwner()));
+            stmt.setInt(3, note.getId());
+            stmt.execute();
+            return note;
+        });
     }
 
     /**
@@ -158,6 +258,10 @@ public class SqlNotebookStorage implements NotebookStorage {
      */
     @Override
     public CompletableFuture<Optional<Note>> removeNote(Note note) {
+        /*return performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("DELETE FROM notes WHERE id=? AND contents=? AND owner=?");
+
+        });*/
         return null;
     }
 
@@ -170,6 +274,11 @@ public class SqlNotebookStorage implements NotebookStorage {
      */
     @Override
     public CompletableFuture<Optional<Note>> removeNote(int noteID) {
+        /*return performTaskAsynchronously(conn -> {
+            PreparedStatement stmt = conn.prepareStatement("DELETE FROM notes WHERE id=?");
+            stmt.setInt(1, noteID);
+
+        });*/
         return null;
     }
 }

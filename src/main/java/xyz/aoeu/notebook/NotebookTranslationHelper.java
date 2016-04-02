@@ -1,7 +1,6 @@
 package xyz.aoeu.notebook;
 
-import org.spongepowered.api.text.TextBuilder;
-import org.spongepowered.api.text.Texts;
+import org.spongepowered.api.text.Text;
 import org.spongepowered.api.text.translation.ResourceBundleTranslation;
 
 import javax.annotation.Nullable;
@@ -20,7 +19,7 @@ class NotebookTranslationHelper {
 
     private NotebookTranslationHelper() {} // Prevent instance creation
 
-    public static TextBuilder t(String key, Object... args) {
-        return Texts.builder(new ResourceBundleTranslation(key, LOOKUP_FUNC), args);
+    public static Text.Builder t(String key, Object... args) {
+        return Text.builder(new ResourceBundleTranslation(key, LOOKUP_FUNC), args);
     }
 }
