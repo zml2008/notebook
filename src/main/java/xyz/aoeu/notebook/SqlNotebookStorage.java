@@ -1,9 +1,14 @@
 package xyz.aoeu.notebook;
 
+import com.github.davidmoten.rx.jdbc.ConnectionProviderFromDataSource;
+import com.github.davidmoten.rx.jdbc.Database;
 import com.google.common.io.Resources;
-import xyz.aoeu.notebook.channel.Channel;
+import rx.Observable;
+import rx.Scheduler;
+import rx.schedulers.Schedulers;
 
 import javax.sql.DataSource;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -33,10 +38,13 @@ public class SqlNotebookStorage implements NotebookStorage {
 
     private final DataSource db;
     private final Executor asyncExecutor;
+    private final Scheduler sched;
+    private final Database.Builder dbBuilder;
 
     public SqlNotebookStorage(DataSource db, Executor asyncExecutor) {
         this.db = db;
         this.asyncExecutor = asyncExecutor;
+        this.sched = Schedulers.from(asyncExecutor);
         performTaskAsynchronously(conn -> {
             DatabaseMetaData md = conn.getMetaData();
             if (!md.getTables(null, null, "notes", null).next()) {
@@ -47,6 +55,9 @@ public class SqlNotebookStorage implements NotebookStorage {
                 conn.commit();
             }
         });
+        this.dbBuilder = Database.builder()
+                .connectionProvider(new ConnectionProviderFromDataSource(this.db))
+                .nonTransactionalScheduler(() -> sched);
     }
 
     private <T> CompletableFuture<T> performTaskAsynchronously(FailableFunction<Connection, T, SQLException> action) {
@@ -74,6 +85,10 @@ public class SqlNotebookStorage implements NotebookStorage {
         return ret;
     }
 
+    private Database openStatement() {
+        return this.dbBuilder.build();
+    }
+
     /**
      * Get a stream of notes owned by a specific user ID.
      * <p/>
@@ -83,23 +98,18 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return A stream of notes owned by a specific user
      */
     @Override
-    public Iterable<Note> getNotes(UUID owner) {
-        Channel<Note> ret = Channel.buffered(32);
-        performTaskAsynchronously(conn -> {
-            PreparedStatement stmt = conn.prepareStatement("SELECT (id, owner, contents) FROM notes WHERE owner=?");
-            stmt.setBytes(1, uuidToBytes(owner));
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                Note note = new Note(bytesToUUID(rs.getBytes(2)), rs.getString(3));
-                note.setId(rs.getInt(1));
-                ret.provide(note);
-            }
-            ret.close();
-        });
-        return ret;
+    public Observable<Note> getNotes(UUID owner) {
+        return openStatement()
+                .select("SELECT id, contents FROM notes WHERE owner=?")
+                .parameter(owner.toString())
+                .get(rs -> {
+                    Note note = new Note(owner, rs.getString(2));
+                    note.setId(rs.getInt(1));
+                    return note;
+                });
     }
 
-    static byte[] uuidToBytes(UUID id) {
+    /*static byte[] uuidToBytes(UUID id) {
         long msb = id.getMostSignificantBits();
         long lsb = id.getLeastSignificantBits();
         return new byte[] {
@@ -145,7 +155,7 @@ public class SqlNotebookStorage implements NotebookStorage {
                         | (long) bytes[14] << 0x08
                         | (long) bytes[15]);
 
-    }
+    }*/
 
     /**
      * Get a stream of all notes.
@@ -154,19 +164,14 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return All currently stored notes
      */
     @Override
-    public Iterable<Note> getAllNotes() {
-        Channel<Note> chan = Channel.buffered();
-        performTaskAsynchronously(conn -> {
-            PreparedStatement stmt = conn.prepareStatement("SELECT (id, owner, contents) FROM notes");
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                Note note = new Note(bytesToUUID(rs.getBytes(2)), rs.getString(3));
-                note.setId(rs.getInt(1));
-                chan.provide(note);
-            }
-            chan.close();
-        });
-        return chan;
+    public Observable<Note> getAllNotes() {
+        return openStatement()
+                .select("SELECT id, owner, contents FROM notes")
+                .get(rs -> {
+                    Note note = new Note(UUID.fromString(rs.getString(2)), rs.getString(3));
+                    note.setId(rs.getInt(1));
+                    return note;
+                });
     }
 
     /**
@@ -177,17 +182,10 @@ public class SqlNotebookStorage implements NotebookStorage {
      * @return A stream of all UUIDs that have stored notes
      */
     @Override
-    public Iterable<UUID> getKnownOwners() {
-        Channel<UUID> ret = Channel.buffered(32);
-        performTaskAsynchronously(conn -> {
-            PreparedStatement stmt = conn.prepareStatement("SELECT (owner) FROM notes UNIQUE");
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                ret.provide(bytesToUUID(rs.getBytes(1)));
-            }
-            ret.close();
-        });
-        return ret;
+    public Observable<UUID> getKnownOwners() {
+        return openStatement()
+                .select("SELECT DISTINCT owner FROM notes")
+                .get(rs -> UUID.fromString(rs.getString(1)));
     }
 
     /**
@@ -205,7 +203,7 @@ public class SqlNotebookStorage implements NotebookStorage {
             if (!rs.next()) {
                 return Optional.empty();
             } else {
-                Note ret = new Note(bytesToUUID(rs.getBytes(1)), rs.getString(2));
+                Note ret = new Note(UUID.fromString(rs.getString(1)), rs.getString(2));
                 ret.setId(id);
                 return Optional.of(ret);
             }
@@ -222,7 +220,7 @@ public class SqlNotebookStorage implements NotebookStorage {
     public CompletableFuture<Note> insertNote(Note note) {
         return performTaskAsynchronously(conn -> {
             PreparedStatement stmt = conn.prepareStatement("INSERT (owner, contents) INTO notes VALUES (?, ?); CALL IDENTITY()");
-            stmt.setBytes(1, uuidToBytes(note.getOwner()));
+            stmt.setString(1, note.getOwner().toString());
             stmt.setString(2, note.getContents());
 
             ResultSet rs = stmt.executeQuery();
@@ -243,7 +241,7 @@ public class SqlNotebookStorage implements NotebookStorage {
         return performTaskAsynchronously(conn -> {
             PreparedStatement stmt = conn.prepareStatement("UPDATE notes SET contents=?, owner=? WHERE id=?");
             stmt.setString(1, note.getContents());
-            stmt.setBytes(2, uuidToBytes(note.getOwner()));
+            stmt.setString(2, note.getOwner().toString());
             stmt.setInt(3, note.getId());
             stmt.execute();
             return note;

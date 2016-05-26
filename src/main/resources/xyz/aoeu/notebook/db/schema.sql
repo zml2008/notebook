@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS notes (
   id int(11) AUTO_INCREMENT PRIMARY KEY,
-  owner BINARY(16),
+  owner char(36),
   contents TEXT,
 );
 

@@ -10,7 +10,7 @@ import java.util.UUID;
  * Test notebook storage
  */
 public class SqlNotebookStorageTest {
-    @Test
+    /*@Test
     public void testUUIDToBytes() {
         for (int i = 0; i < 10; ++i) {
             UUID testId = UUID.randomUUID();
@@ -19,5 +19,5 @@ public class SqlNotebookStorageTest {
             assertEquals(testId, fromBytes);
         }
 
-    }
+    }*/
 }

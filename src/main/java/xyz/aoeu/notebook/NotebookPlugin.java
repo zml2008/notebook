@@ -1,6 +1,6 @@
 package xyz.aoeu.notebook;
 
-import com.google.common.collect.Iterables;
+import com.google.common.collect.Lists;
 import com.google.inject.Inject;
 import ninja.leaping.configurate.ConfigurationNode;
 import ninja.leaping.configurate.commented.CommentedConfigurationNode;
@@ -82,20 +82,17 @@ public class NotebookPlugin {
                     User target = args.<User>getOne("command.notes.arg.source").orElseThrow(IllegalStateException::new);
                     Permissions.check(src, Permissions.owned(Permissions.NOTEBOOK_VIEW, src, target));
                     src.sendMessage(normal(t("command.notes.result.fetching")).build());
-                    game.getScheduler().createTaskBuilder()
-                            .async()
-                            .execute(() -> {
-                                Iterable<Note> notes = getStorage().getNotes(target.getUniqueId());
-                                this.pagination.builder()
-                                        .contents(Iterables.transform(notes, note -> {
-                                                    return normal(Text.builder())
-                                                            .append(hl(Text.builder(String.valueOf(note.getId())).append(ID_SPACER)).build(), // ID
-                                                                    Text.of(note.getContents())).build(); // Contents
-                                                }))
-                                        .title(normal(t("command.notes.result.header", hl(Text.builder(target.getName())).build())).build())
-                                        .sendTo(src);
+                    getStorage().getNotes(target.getUniqueId()).toList().subscribe(notes -> {
+                        this.pagination.builder()
+                                .contents(Lists.transform(notes, note -> {
+                                    return normal(Text.builder())
+                                            .append(hl(Text.builder(String.valueOf(note.getId())).append(ID_SPACER)).build(), // ID
+                                                    Text.of(note.getContents())).build(); // Contents
+                                }))
+                                .title(normal(t("command.notes.result.header", hl(Text.builder(target.getName())).build())).build())
+                                .sendTo(src);
+                    });
 
-                            }).submit(this);
                     return CommandResult.empty(); // Unknown success value
 
                 })

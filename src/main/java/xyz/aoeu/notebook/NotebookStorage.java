@@ -1,5 +1,7 @@
 package xyz.aoeu.notebook;
 
+import rx.Observable;
+
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -14,7 +16,7 @@ public interface NotebookStorage {
      * @param owner The owner of the notes to get
      * @return A stream of notes owned by a specific user
      */
-    Iterable<Note> getNotes(UUID owner);
+    Observable<Note> getNotes(UUID owner);
 
     /**
      * Get a stream of all notes.
@@ -22,7 +24,7 @@ public interface NotebookStorage {
      *
      * @return All currently stored notes
      */
-    Iterable<Note> getAllNotes();
+    Observable<Note> getAllNotes();
 
     /**
      * Get all UUIDS that currently have notes
@@ -30,7 +32,7 @@ public interface NotebookStorage {
      * This method may return a stream that is populated asynchronously
      * @return A stream of all UUIDs that have stored notes
      */
-    Iterable<UUID> getKnownOwners();
+    Observable<UUID> getKnownOwners();
 
     /**
      * Get a note that may exist.
